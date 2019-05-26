@@ -27,7 +27,9 @@ static struct list ready_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
-
+//list of sleeping threads and smallest tick that use for awake thread
+static struct list sleep_list;
+static int64_t smallest_tick;
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -84,6 +86,65 @@ static tid_t allocate_tid (void);
 
    It is not safe to call thread_current() until this function
    finishes. */
+void set_smallest_tick(int64_t tmp){
+	if(tmp>=smallest_tick)
+		return;
+	smallest_tick = tmp;
+}
+int64_t get_smallest_tick(){
+	return smallest_tick;
+}
+void thread_sleep(int64_t ticks){
+	struct thread *tmp, *target;
+	struct list_elem *pos;
+	enum intr_level sig_status;
+	sig_status = intr_disable();
+	target=thread_current();
+	ASSERT(target != idle_thread);	
+
+	set_smallest_tick(target->sleep_tick =  ticks);
+	if(list_empty(&sleep_list)){
+		list_push_front(&sleep_list, &target->elem);
+	}
+	else{
+		pos=list_begin(&sleep_list);
+		while(pos!=list_end(&sleep_list)){
+			tmp = list_entry(pos, struct thread, elem);
+			if(tmp->sleep_tick>target->sleep_tick){
+				list_insert(pos, &target->elem);
+				break;
+			}
+			pos=list_next(pos);
+		}
+		if(pos==list_end(&sleep_list)){
+			list_push_back(&sleep_list,&target->elem);
+		}
+	}
+	thread_block();
+	intr_set_level(sig_status);
+}
+void thread_awake(int64_t ticks){
+	struct thread *tmp;
+	struct list_elem *pos;
+	int i=0;
+	smallest_tick = INT64_MAX;
+	pos=list_begin(&sleep_list);
+	if(list_empty(&sleep_list)){ return;} 
+	while(1){
+		tmp = list_entry(pos, struct thread, elem);
+		
+		if(tmp->sleep_tick <= ticks){
+			pos=list_remove(&tmp->elem);
+			thread_unblock(tmp);
+			if(list_empty(&sleep_list)){ return;}	
+
+		}
+		else {
+			set_smallest_tick(tmp->sleep_tick);
+			break;
+		}
+	}
+}
 void
 thread_init (void) 
 {
@@ -92,7 +153,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+	list_init(&sleep_list);
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);

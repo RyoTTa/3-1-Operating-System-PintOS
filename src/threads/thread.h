@@ -82,6 +82,7 @@ typedef int tid_t;
    blocked state is on a semaphore wait list. */
 struct thread
   {
+    int64_t sleep_tick;
     /* Owned by thread.c. */
     tid_t tid;                          /* Thread identifier. */
     enum thread_status status;          /* Thread state. */
@@ -137,5 +138,8 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
-
+void thread_sleep(int64_t tick);
+void thread_awake(int64_t tick);
+int64_t get_smallest_tick(void);
+void set_smallest_tick(int64_t tick);
 #endif /* threads/thread.h */
