@@ -13,6 +13,7 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "userprog/syscall.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -27,9 +28,7 @@ static struct list ready_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
-//list of sleeping threads and smallest tick that use for awake thread
-static struct list sleep_list;
-static int64_t smallest_tick;
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -66,7 +65,8 @@ static void kernel_thread (thread_func *, void *aux);
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
-static void init_thread (struct thread *, const char *name, int priority);
+static void init_thread (struct thread *, const char *name, int priority,
+                         tid_t);
 static bool is_thread (struct thread *) UNUSED;
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
@@ -86,67 +86,6 @@ static tid_t allocate_tid (void);
 
    It is not safe to call thread_current() until this function
    finishes. */
-void set_smallest_tick(int64_t tmp){
-	if(tmp>=smallest_tick)
-		return;
-	smallest_tick = tmp;
-}
-int64_t get_smallest_tick(){
-	return smallest_tick;
-}
-void thread_sleep(int64_t ticks){
-	struct thread *tmp, *target;
-	struct list_elem *pos;
-	enum intr_level sig_status;
-	sig_status = intr_disable();
-	target=thread_current();
-	ASSERT(target != idle_thread);	
-
-	set_smallest_tick(target->sleep_tick =  ticks);
-	//printf("set small : %ld ticks : %ld\n",(long)smallest_tick, (long)target->sleep_tick);
-	if(list_empty(&sleep_list)){
-		list_push_front(&sleep_list, &target->elem);
-	}
-	else{
-		pos=list_begin(&sleep_list);
-		while(pos!=list_end(&sleep_list)){
-			tmp = list_entry(pos, struct thread, elem);
-			if(tmp->sleep_tick>target->sleep_tick){
-				list_insert(pos, &target->elem);
-				break;
-			}
-			pos=list_next(pos);
-		}
-		if(pos==list_end(&sleep_list)){
-			list_push_back(&sleep_list,&target->elem);
-		}
-	}
-	thread_block();
-	intr_set_level(sig_status);
-}
-void thread_awake(int64_t ticks){
-	struct thread *tmp;
-	struct list_elem *pos;
-	smallest_tick = INT64_MAX;
-	pos=list_begin(&sleep_list);
-	if(list_empty(&sleep_list)){ /*printf("empty\n");*/return;} 
-	while(1){
-		tmp = list_entry(pos, struct thread, elem);
-		
-		if(tmp->sleep_tick <= ticks){
-			//printf("%d del small: %ld, tmp : %ld, tick : %ld\n",i++,(long)smallest_tick, (long)tmp->sleep_tick,(long)ticks);
-			pos=list_remove(&tmp->elem);
-			thread_unblock(tmp);
-			if(list_empty(&sleep_list)){ /*printf("while empty\n");*/return;}	
-
-		}
-		else {
-			//printf("else\n");
-			set_smallest_tick(tmp->sleep_tick);
-			break;
-		}
-	}
-}
 void
 thread_init (void) 
 {
@@ -155,12 +94,11 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-	list_init(&sleep_list);
+
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
-  init_thread (initial_thread, "main", PRI_DEFAULT);
+  init_thread (initial_thread, "main", PRI_DEFAULT, 0);
   initial_thread->status = THREAD_RUNNING;
-  initial_thread->tid = allocate_tid ();
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -244,8 +182,8 @@ thread_create (const char *name, int priority,
     return TID_ERROR;
 
   /* Initialize thread. */
-  init_thread (t, name, priority);
-  tid = t->tid = allocate_tid ();
+  init_thread (t, name, priority, allocate_tid ());
+  tid = t->tid;
 
   /* Prepare thread for first run by initializing its stack.
      Do this atomically so intermediate values for the 'stack' 
@@ -353,6 +291,7 @@ thread_exit (void)
 {
   ASSERT (!intr_context ());
 
+  syscall_exit ();
 #ifdef USERPROG
   process_exit ();
 #endif
@@ -520,25 +459,30 @@ is_thread (struct thread *t)
 /* Does basic initialization of T as a blocked thread named
    NAME. */
 static void
-init_thread (struct thread *t, const char *name, int priority)
+init_thread (struct thread *t, const char *name, int priority, tid_t tid)
 {
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
 
   memset (t, 0, sizeof *t);
+  t->tid = tid;
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->exit_code = -1;
+  t->wait_status = NULL;
+  list_init (&t->children);
+  sema_init (&t->timer_sema, 0);
+  t->pagedir = NULL;
+  t->pages = NULL;
+  t->bin_file = NULL;
+  list_init (&t->fds);
+  list_init (&t->mappings);
+  t->next_handle = 2;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
-#ifdef USERPROG
-	sema_init(&(t->child_lock), 0);
-	sema_init(&(t->pcb_lock), 0);
-	list_init(&(t->child));
-	list_push_back(&running_thread()->child, &(t->child_elem));
-#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
