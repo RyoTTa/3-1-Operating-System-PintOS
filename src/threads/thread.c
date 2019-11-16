@@ -103,6 +103,7 @@ void thread_sleep(int64_t ticks){
 	ASSERT(target != idle_thread);	
 
 	set_smallest_tick(target->sleep_tick =  ticks);
+	//printf("set small : %ld ticks : %ld\n",(long)smallest_tick, (long)target->sleep_tick);
 	if(list_empty(&sleep_list)){
 		list_push_front(&sleep_list, &target->elem);
 	}
@@ -126,20 +127,21 @@ void thread_sleep(int64_t ticks){
 void thread_awake(int64_t ticks){
 	struct thread *tmp;
 	struct list_elem *pos;
-	int i=0;
 	smallest_tick = INT64_MAX;
 	pos=list_begin(&sleep_list);
-	if(list_empty(&sleep_list)){ return;} 
+	if(list_empty(&sleep_list)){ /*printf("empty\n");*/return;} 
 	while(1){
 		tmp = list_entry(pos, struct thread, elem);
 		
 		if(tmp->sleep_tick <= ticks){
+			//printf("%d del small: %ld, tmp : %ld, tick : %ld\n",i++,(long)smallest_tick, (long)tmp->sleep_tick,(long)ticks);
 			pos=list_remove(&tmp->elem);
 			thread_unblock(tmp);
-			if(list_empty(&sleep_list)){ return;}	
+			if(list_empty(&sleep_list)){ /*printf("while empty\n");*/return;}	
 
 		}
 		else {
+			//printf("else\n");
 			set_smallest_tick(tmp->sleep_tick);
 			break;
 		}
@@ -531,6 +533,12 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+#ifdef USERPROG
+	sema_init(&(t->child_lock), 0);
+	sema_init(&(t->pcb_lock), 0);
+	list_init(&(t->child));
+	list_push_back(&running_thread()->child, &(t->child_elem));
+#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and

@@ -19,7 +19,7 @@
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
-static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool load (const char *cmdline, void (**eip) (void), void **esp, char ** pos);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -30,16 +30,22 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
-
+	char *tmp, *rest, copy_ary[30];
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-
+	strlcpy(copy_ary, file_name, 30);
+	tmp = strtok_r(copy_ary, " ", &rest);
+	
+	if (filesys_open(tmp) == NULL) {
+    		return -1; 
+  	}
+	//printf("file_name%s tmp : %s fn_copy : %s\n", file_name, tmp, fn_copy);
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (tmp, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -50,16 +56,22 @@ process_execute (const char *file_name)
 static void
 start_process (void *file_name_)
 {
-  char *file_name = file_name_;
+  char *file_name = file_name_, *tmp;
+	//char copy_str[30];
   struct intr_frame if_;
   bool success;
+	//strlcpy(copy_str, file_name, 30);
+	//수정 파일 이름 저장
+	file_name = strtok_r(file_name, " ", &tmp);
+
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+	//수정 스트링 위치 load 함수에 전달
+  success = load (file_name, &if_.eip, &if_.esp, &tmp);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -86,8 +98,47 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
+	//int x=0, y;
+	//struct thread *current=thread_current();
+	/*
+	while(true){
+		thread_yield();
+	}*/
+	/*
+	int i;
+	for(i=0;i<100000;i++)
+		if(i%10==0)
+		x+=1;
+	return x;
+	*/
+
+	struct list_elem* list_pos;
+	struct thread* tmp=NULL;
+	int exit_status;
+	//printf("waiting start\n");
+	for(list_pos=list_begin(&(thread_current()->child)); list_pos != list_end(&(thread_current()->child)); list_pos = list_next(list_pos)){
+		//printf("for\n");
+		tmp=list_entry(list_pos, struct thread, child_elem);
+		//printf("list entry\n");
+		if(child_tid==tmp->tid){
+			//printf("enter if\n");
+			sema_down(&(tmp->child_lock));
+			//printf("sema_down\n");
+			exit_status=tmp->exit_status;
+			//printf("exit_status\n");
+			list_remove(&(tmp->child_elem));
+			sema_up(&(tmp->pcb_lock));
+			//printf("list_remove\n");
+			return exit_status;
+		}
+		//x++;
+		//printf("x = %d\n", x);
+	}
+	
+	
+	//printf("done wait\n");
   return -1;
 }
 
@@ -114,6 +165,8 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+	sema_up(&(cur->child_lock));
+	sema_down(&(cur->pcb_lock));
 }
 
 /* Sets up the CPU for running user code in the current
@@ -194,8 +247,9 @@ struct Elf32_Phdr
 #define PF_X 1          /* Executable. */
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
+//수정 setup_stack 파라미터
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char* filename, char** pos);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -205,8 +259,9 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
+//수정 load함수 파라미터
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *file_name, void (**eip) (void), void **esp, char **pos) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -220,7 +275,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-
+	//printf("open executable file\n");
   /* Open executable file. */
   file = filesys_open (file_name);
   if (file == NULL) 
@@ -228,7 +283,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
-
+//printf("1111");
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -241,22 +296,25 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", file_name);
       goto done; 
     }
-
+//printf("2222");
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
+	//printf("i = %d\n", i);
       struct Elf32_Phdr phdr;
 
       if (file_ofs < 0 || file_ofs > file_length (file))
         goto done;
       file_seek (file, file_ofs);
-
+//printf("file_seek done\n");
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
         goto done;
       file_ofs += sizeof phdr;
+	//printf("switch start\n");
       switch (phdr.p_type) 
         {
+	
         case PT_NULL:
         case PT_NOTE:
         case PT_PHDR:
@@ -271,6 +329,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_LOAD:
           if (validate_segment (&phdr, file)) 
             {
+		//printf("validate done\n");
               bool writable = (phdr.p_flags & PF_W) != 0;
               uint32_t file_page = phdr.p_offset & ~PGMASK;
               uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
@@ -300,9 +359,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
           break;
         }
     }
-
-  /* Set up stack. */
-  if (!setup_stack (esp))
+//printf("switch done\n");
+  /* 수정 파라미터 Set up stack. */
+  if (!setup_stack (esp, file_name, pos))
     goto done;
 
   /* Start address. */
@@ -426,12 +485,16 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
+//수정 setup_stack
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char *filename, char** pos) 
 {
   uint8_t *kpage;
   bool success = false;
-
+	char *token;
+	int i, argc = 0, argv_size = 5, len;
+	char **argv = (char**)malloc(sizeof(char *)*argv_size);
+	//printf("setup_stack%s || %s\n",filename, *pos);
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
@@ -441,6 +504,50 @@ setup_stack (void **esp)
       else
         palloc_free_page (kpage);
     }
+	//printf("push start esp = %u\n", (unsigned int)(*esp));
+	//수정 stack에 푸쉬
+	for (token = filename; token != NULL;token = strtok_r(NULL, " ", pos)){
+		//*esp -= strlen(token) + 1;
+		//printf("esp = %u\n", (unsigned int)(*esp));
+		//argv[argc] = *esp;
+		argv[argc]=token;
+		argc++;
+		if (argc >= argv_size){
+			argv_size *= 2;
+			argv = (char**)realloc(argv, sizeof(char *)*argv_size);
+		}
+		//memcpy(*esp, token, strlen(token) + 1);
+	}
+	for(i=argc-1;i >= 0;i--){
+		len=strlen(argv[i]);
+		*esp -=len+1;
+		memcpy(*esp, argv[i], len+1);
+		argv[i] = *esp;
+	}
+	argv[argc] = 0;
+	
+	i = (unsigned int)(*esp) % 4;
+	//printf("for done i = %d esp = %u\n", i, (unsigned int)(*esp));
+	if (i){
+		*esp -= i;
+		memset(*esp, 0, i);
+	}
+	for (i = argc; i >= 0; i--){
+		*esp -= sizeof(char *);
+		memcpy(*esp, &argv[i], sizeof(char *));
+	}
+	//printf("argv done\n");
+	token = *esp;
+	*esp -= sizeof(char **);
+	memcpy(*esp, &token, sizeof(char **));
+	*esp -= sizeof(int);
+	memcpy(*esp, &argc, sizeof(int));
+	*esp -= sizeof(void *);
+	memset(*esp, 0, sizeof(void *));
+	//hex_dump(*esp, *esp, 100, true);
+	//printf("setup done\n");
+	free(argv);
+	//printf("free done\n");
   return success;
 }
 

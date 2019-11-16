@@ -4,7 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-
+#include "threads/synch.h"
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -82,6 +82,7 @@ typedef int tid_t;
    blocked state is on a semaphore wait list. */
 struct thread
   {
+	
     int64_t sleep_tick;
     /* Owned by thread.c. */
     tid_t tid;                          /* Thread identifier. */
@@ -97,10 +98,17 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+	struct semaphore child_lock;
+	struct semaphore pcb_lock;
+	struct list child;
+	struct list_elem child_elem;
+	int exit_status;
 #endif
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+    struct file* fd[128]; // added for system calls related to file
+	
   };
 
 /* If false (default), use round-robin scheduler.
